@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 	"time"
 )
 
@@ -51,10 +52,11 @@ func getEnvVars(c *config) *config {
 }
 
 // updateIPNets reads ip networks from url and writes them to the map
-func updateIPNets(url string, ipnets map[string]struct{}) {
+func updateIPNets(url string, ipnets *shmap) {
 	resp, err := http.Get(url)
 	if err != nil {
 		log.Printf("Unable to get IP networks from URL: %v\n", err)
+		return
 	}
 	defer resp.Body.Close()
 
@@ -64,27 +66,39 @@ func updateIPNets(url string, ipnets map[string]struct{}) {
 	}
 
 	respBytesSlice := bytes.Split(bytes.TrimSpace(respBytes), []byte("\n"))
+	// we will clear map before each update
+	ipnets.Lock()
+	ipnets.m = map[string]struct{}{}
 	for _, value := range respBytesSlice {
 		_, ipnet, err := net.ParseCIDR(string(value))
 		if err != nil {
 			log.Printf("Failed to parse CIDR: %v\n", err)
 		}
-		ipnets[ipnet.String()] = struct{}{}
+		ipnets.m[ipnet.String()] = struct{}{}
 	}
+	ipnets.Unlock()
 }
 
 // server holds router and ip networks map
 type server struct {
 	router *http.ServeMux
-	ipnets map[string]struct{}
+	ipnets *shmap
+}
+
+// shmap holds concurrently safe shared ip networks map
+type shmap struct {
+	sync.RWMutex
+	m map[string]struct{}
 }
 
 // getIPNets handler will write a list of ip networks from map
 func (s *server) getIPNets(w http.ResponseWriter, r *http.Request) {
 	var ipnets []string
-	for ipnet := range s.ipnets {
+	s.ipnets.RLock()
+	for ipnet := range s.ipnets.m {
 		ipnets = append(ipnets, ipnet)
 	}
+	s.ipnets.RUnlock()
 	bs, err := json.Marshal(ipnets)
 	if err != nil {
 		log.Printf("Failed to marshal ipnets into JSON: %v\n", err)
@@ -105,13 +119,15 @@ func (s *server) checkIPNet(w http.ResponseWriter, r *http.Request) {
 	}
 
 	match := false
-	for key := range s.ipnets {
+	s.ipnets.RLock()
+	for key := range s.ipnets.m {
 		_, ipnet, _ := net.ParseCIDR(key)
 		if ipnet.Contains(realIP) {
 			match = true
 			break
 		}
 	}
+	s.ipnets.RUnlock()
 
 	resp := realip{
 		RealIP: realIP.String(),
@@ -143,15 +159,13 @@ func main() {
 	c = getEnvVars(c)
 
 	// init ip networks map
-	ipnets := map[string]struct{}{}
+	ipnets := &shmap{}
 	updateIPNets(c.updateIPv4URL, ipnets)
 
 	// run IPv4 IP networks updater in a separate goroutine
 	go func(c *config) {
 		cron := time.Tick(c.updateInterval)
 		for range cron {
-			// we will clear map before each update
-			ipnets = map[string]struct{}{}
 			updateIPNets(c.updateIPv4URL, ipnets)
 		}
 	}(c)
