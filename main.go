@@ -52,11 +52,11 @@ func getEnvVars(c *config) *config {
 }
 
 // updateIPNets reads ip networks from url and writes them to the map
-func updateIPNets(url string, ipnets *shmap) {
+func updateIPNets(url string, ipnets *shmap) error {
 	resp, err := http.Get(url)
 	if err != nil {
 		log.Printf("Unable to get IP networks from URL: %v\n", err)
-		return
+		return err
 	}
 	defer resp.Body.Close()
 
@@ -77,6 +77,7 @@ func updateIPNets(url string, ipnets *shmap) {
 		ipnets.m[ipnet.String()] = struct{}{}
 	}
 	ipnets.Unlock()
+	return nil
 }
 
 // server holds router and ip networks map
@@ -160,7 +161,9 @@ func main() {
 
 	// init ip networks map
 	ipnets := &shmap{}
-	updateIPNets(c.updateIPv4URL, ipnets)
+	if err := updateIPNets(c.updateIPv4URL, ipnets); err != nil {
+		log.Fatalln("Failed to load IP networks")
+	}
 
 	// run IPv4 IP networks updater in a separate goroutine
 	go func(c *config) {
