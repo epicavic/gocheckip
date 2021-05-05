@@ -63,6 +63,7 @@ func updateIPNets(url string, ipnets *shmap) error {
 	respBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Println(err)
+		return err
 	}
 
 	respBytesSlice := bytes.Split(bytes.TrimSpace(respBytes), []byte("\n"))
